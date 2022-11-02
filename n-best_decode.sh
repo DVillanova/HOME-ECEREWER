@@ -1,13 +1,15 @@
 #!/bin/bash
-# N-BEST HYPOTHESES DECODING(USAR EN DOCKER)
+# Extracción de n-mejores hipótesis para cada línea (USAR EN DOCKER)
+
+#Número de mejores hipótesis a considerar
 
 #IMPORTANTE PONER LOS LC
 export LC_NUMERIC=C.UTF-8;
 
-#Activate pylaia env (Docker)
+#Últimos requisitos de PyLaia
 conda activate pylaia
 
-#Variables and Paths for Docker
+#Variables, parámetros y rutas para Docker
 GPU=1
 BatchSize=8
 WorkDir=/root/directorioTrabajo/TFM-NER
@@ -31,37 +33,41 @@ N_CORES=1
 
 img_dirs=$(find ${DataDir}/*_charters -mindepth 3 -maxdepth 3 -type d)
 
-echo "Results N-best decoding" > $WorkDir/results-nbest-decoding.txt
+echo "Resultados experimentacion N-best decoding" > $WorkDir/results-nbest-decoding.txt
 
-#Iterate over different values of N
 for N in 1 10 50 100 500 1000 2500 5000 10000
 do
 
-#Lattices should be generated from initial_exp.sh
+#Generar lattices (ya está hecho en el exp. original)
 cd $TmpDir/decode
+mkdir lattices
+
+#Generar lattice de test en lattices/lat-test.gz
+#latgen-faster-mapped --verbose=2 --allow-partial=true --acoustic-scale=${ASF} --max-active=${MAX_NUM_ACT_STATES} --beam=${BEAM_SEARCH} --lattice-beam=${LATTICE_BEAM} --max-mem=4194304 $ModelDir/HMMs/train/new.mdl $ModelDir/HMMs/test/graph/HCLG.fst scp:test/confMats_alp0.3-test.scp "ark:|gzip -c > lattices/lat-test.gz" ark,t:lattices/RES-test 2>lattices/LOG-Lats-test
+#Generar lattice de validación en lattices/lat-validation.gz
+#latgen-faster-mapped --verbose=2 --allow-partial=true --acoustic-scale=${ASF} --max-active=${MAX_NUM_ACT_STATES} --beam=${BEAM_SEARCH} --lattice-beam=${LATTICE_BEAM} --max-mem=4194304 $ModelDir/HMMs/train/new.mdl $ModelDir/HMMs/test/graph/HCLG.fst scp:test/confMats_alp0.3-validation.scp "ark:|gzip -c > lattices/lat-validation.gz" ark,t:lattices/RES-validation 2>lattices/LOG-Lats-validation
+
 cd lattices
 
 cp ${LangDir}/lm/lang/words.txt ./words.txt
 
-#OBTAIN N-BEST TRANSCRIPTIONS IN VALIDATION
-rm ${N}-best-lat-validation.gz
-lattice-scale --acoustic-scale=${ASF} "ark:gzip -c -d lat-validation.gz |" ark:- | \
-lattice-to-nbest --n=${N} --acoustic-scale=${ASF} "ark:gzip -c -d lat-validation.gz |" "ark:|gzip -c > ${N}_best-lat-validation.gz"
-#lattice-copy ark:'gunzip -c n_best-lat-validation.gz|' ark,t:n_best-lat-validation.txt
-nbest-to-linear "ark:gzip -c -d ${N}_best-lat-validation.gz |" ark,t:${N}_best-validation.ali 'ark,t:|int2sym.pl -f 2- words.txt > n_best-validation-transcriptions.txt'
+#OBTENER N-BEST TRANSCRIPCIONES EN VALIDACION
+# lattice-to-nbest --n=${N} --acoustic-scale=${ASF} "ark:gzip -c -d lat-validation.gz |" "ark:|gzip -c > n_best-lat-validation.gz"
+# lattice-copy ark:'gunzip -c n_best-lat-validation.gz|' ark,t:n_best-lat-validation.txt
+# nbest-to-linear "ark:gzip -c -d n_best-lat-validation.gz |" ark,t:n_best-validation.ali 'ark,t:|int2sym.pl -f 2- words.txt > n_best-validation-transcriptions.txt'
 
-awk '{
-  printf("%s ", $1);
-  for (i=2;i<=NF;++i) {
-    if ($i == "<space>")
-      printf(" ");
-    else
-      printf("%s", $i);
-  }
-  printf("\n");
-}' n_best-validation-transcriptions.txt > ../n_best-validation-words.txt;
+# awk '{
+#   printf("%s ", $1);
+#   for (i=2;i<=NF;++i) {
+#     if ($i == "<space>")
+#       printf(" ");
+#     else
+#       printf("%s", $i);
+#   }
+#   printf("\n");
+# }' n_best-validation-transcriptions.txt > ../n_best-validation-words.txt;
 
-#OBTAIN N-BEST TRANSCRIPTIONS IN TEST
+#OBTENER N-BEST TRANSCRIPCIONES EN TEST
 rm ${N}-best-lat-test.gz
 lattice-scale --acoustic-scale=${ASF} "ark:gzip -c -d lat-test.gz |" ark:- | \
 lattice-add-penalty --word-ins-penalty=${WIP} ark:- ark:- | \
@@ -74,25 +80,25 @@ rm ${N}-best-test.ali
 
 rm ../${N}-best-test-words.txt
 awk '{
-  printf("%s ", $1);
-  for (i=2;i<=NF;++i) {
-    if ($i == "<space>")
-      printf(" ");
-    else
-      printf("%s", $i);
-  }
-  printf("\n");
+printf("%s ", $1);
+for (i=2;i<=NF;++i) {
+  if ($i == "<space>")
+    printf(" ");
+  else
+    printf("%s", $i);
+}
+printf("\n");
 }' best-test-transcriptions.txt > ../${N}-best-test-words.txt;
 
 
-#CRAWLING IN THE N-BEST
+#CÓDIGO PYTHON PARA CRAWL EN LAS N-BEST
 echo "N=" ${N} >> $WorkDir/results-nbest-decoding.txt
 
 cd ..
 rm ${N}-best-compliant-test-words.txt
 python ${ScriptsDir}/nbest_hyp_crawler.py ./${N}-best-test-words.txt ./${N}-best-compliant-test-words.txt $WorkDir/histogram-${N}-best.txt ./crawler-log.txt
 
-#CHAR LEVEL TRANSCRIPT
+#OBTENER TRANSCRIPCION A NIVEL DE CARACTER (EN PYTHON MEJOR)
 python ${ScriptsDir}/char_transcript_extractor.py ./${N}-best-compliant-test-words.txt  ./${N}-best-compliant-test-chars.txt
 echo "Test CER" >> $WorkDir/results-nbest-decoding.txt 
 compute-wer --mode=present  ark:$LangDir/char/char.total.txt ark:./${N}-best-compliant-test-chars.txt | grep WER | sed -r 's|%WER|%CER|g' >> $WorkDir/results-nbest-decoding.txt;
@@ -109,15 +115,16 @@ compute-wer --mode=present ark:SeparateSimbols-word.txt ark:SeparateSimbols-word
 
 rm SeparateSimbols-*
 
-#EXTRACT NEs
+#EXTRAER NEs en NER-NBEST-TEST
 cd $WorkDir/PREC-REC/
 rm -rf NER-${N}BEST-TEST
 mkdir NER-${N}BEST-TEST
 cd NER-${N}BEST-TEST
 ${ScriptsDir}/extractNERHip2.sh $TmpDir/decode/${N}-best-compliant-test-words.txt
 
-#EVALUATION OF PREC-REC AND EDIT DISTANCE
+#EVALUACIÓN PREC-REC Y DIST. ED.
 cd ..
+
 
 python ${ScriptsDir}/calc_prec_rec.py ./NER-GT ./NER-${N}BEST-TEST >> $WorkDir/results-nbest-decoding.txt
 python ${ScriptsDir}/dist_edicion_custom_saturated.py ./NER-GT ./NER-${N}BEST-TEST/ >> $WorkDir/results-nbest-decoding.txt
